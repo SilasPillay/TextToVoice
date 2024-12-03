@@ -1,0 +1,135 @@
+from flask import Flask, request, jsonify, send_file
+import pyttsx3
+from pydub import AudioSegment
+import os
+
+app = Flask(__name__)
+
+# Directory to store generated files
+OUTPUT_DIR = "outputs"
+if not os.path.exists(OUTPUT_DIR):
+    os.makedirs(OUTPUT_DIR)
+
+# Initialize TTS engine
+engine = pyttsx3.init()
+
+# Retrieve all available voices
+voices = engine.getProperty('voices')
+voice_options = [{"id": voice.id, "name": voice.name, "gender": "male" if "male" in voice.id.lower() else "female"} for voice in voices]
+
+@app.route("/voices", methods=["GET"])
+def list_voices():
+    """
+    List all available voices for the text-to-speech engine.
+    """
+    return jsonify(voice_options)
+
+@app.route("/synthesize", methods=["POST"])
+def synthesize():
+    """
+    Convert text to speech and save it as an audio file.
+    """
+    data = request.json
+    text = data.get("text")
+    voice_id = data.get("voice_id")
+    audio_format = data.get("format", "mp3")
+
+    if not text or not voice_id:
+        return jsonify({"error": "Missing 'text' or 'voice_id' in the request."}), 400
+
+    # Set the voice
+    try:
+        engine.setProperty("voice", voice_id)
+    except Exception as e:
+        return jsonify({"error": f"Invalid voice ID: {e}"}), 400
+
+    # Generate audio
+    temp_file = os.path.join(OUTPUT_DIR, "temp.wav")
+    output_file = os.path.join(OUTPUT_DIR, f"output.{audio_format}")
+
+    try:
+        engine.save_to_file(text, temp_file)
+        engine.runAndWait()
+
+        # Convert to the requested format if needed
+        if audio_format == "mp3":
+            audio = AudioSegment.from_wav(temp_file)
+            audio.export(output_file, format="mp3")
+            os.remove(temp_file)  # Remove temporary WAV file
+        else:
+            os.rename(temp_file, output_file)  # Keep as WAV
+
+        return send_file(output_file, as_attachment=True)
+
+    except Exception as e:
+        return jsonify({"error": f"Error generating audio: {e}"}), 500
+
+if __name__ == "__main__":
+    app.run(debug=True)
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Text-to-Speech App</title>
+    <script>
+        async function fetchVoices() {
+            const response = await fetch('/voices');
+            const voices = await response.json();
+            const voiceSelect = document.getElementById("voiceSelect");
+
+            voices.forEach(voice => {
+                const option = document.createElement("option");
+                option.value = voice.id;
+                option.text = `${voice.name} (${voice.gender})`;
+                voiceSelect.add(option);
+            });
+        }
+
+        async function synthesizeSpeech() {
+            const text = document.getElementById("text").value;
+            const voiceId = document.getElementById("voiceSelect").value;
+            const format = document.getElementById("formatSelect").value;
+
+            if (!text || !voiceId) {
+                alert("Please enter text and select a voice.");
+                return;
+            }
+
+            const response = await fetch('/synthesize', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ text, voice_id: voiceId, format })
+            });
+
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.style.display = "none";
+                a.href = url;
+                a.download = `output.${format}`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+            } else {
+                alert("Failed to generate speech.");
+            }
+        }
+
+        window.onload = fetchVoices;
+    </script>
+</head>
+<body>
+    <h1>Text-to-Speech App</h1>
+    <textarea id="text" placeholder="Enter text here"></textarea><br>
+    <label for="voiceSelect">Select Voice:</label>
+    <select id="voiceSelect"></select><br>
+    <label for="formatSelect">Select Format:</label>
+    <select id="formatSelect">
+        <option value="mp3">MP3</option>
+        <option value="wav">WAV</option>
+    </select><br>
+    <button onclick="synthesizeSpeech()">Generate</button>
+</body>
+</html>
